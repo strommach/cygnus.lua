@@ -1,0 +1,134 @@
+*cygnus.txt*    Fast offline C, C++, and POSIX documentation finder for Neovim
+
+==============================================================================
+CONTENTS                                                     *cygnus-contents*
+
+    1. Introduction .................................. |cygnus-introduction|
+    2. Requirements .................................. |cygnus-requirements|
+    3. Setup & Configuration ......................... |cygnus-setup|
+    4. Commands ...................................... |cygnus-commands|
+    5. Keymaps ....................................... |cygnus-keymaps|
+    6. Lua API ....................................... |cygnus-api|
+    7. Highlight Groups .............................. |cygnus-highlights|
+
+==============================================================================
+1. INTRODUCTION                                          *cygnus-introduction*
+
+`cygnus.lua` is a pure-Lua, zero-dependency Neovim plugin that provides a
+blazingly fast floating fuzzy finder and documentation viewer powered by the
+`cygnus` offline documentation CLI for C, C++, and POSIX APIs.
+
+- Quick fuzzy/apropos search and compact (`--short`) lookups open in floating
+  windows.
+- Full man-page style documentation opens in a configurable split (`split` or
+  `vsplit`) with `SEE ALSO` navigation and history.
+
+==============================================================================
+2. REQUIREMENTS                                          *cygnus-requirements*
+
+- Neovim >= 0.10
+- `cygnus` CLI installed and available in `$PATH` (with a built `cygnus.db`)
+
+Run `:checkhealth cygnus` to verify your environment.
+
+==============================================================================
+3. SETUP & CONFIGURATION                                        *cygnus-setup*
+
+Call `require("cygnus").setup(opts)` with any overrides:
+>lua
+    require("cygnus").setup({
+      cmd = "cygnus",
+      db_path = nil,          -- optional explicit path to cygnus.db
+      default_source = nil,   -- nil = ALL, or "c" | "posix" | "cpp"
+      cache_max_entries = 256,
+      finder = {
+        width = 0.86,
+        height = 0.78,
+        border = "rounded",
+        prompt_prefix = " > ",
+        limit = 40,
+        debounce_ms = 40,
+        preview_debounce_ms = 20,
+        preview_ratio = 0.56,
+        min_preview_cols = 84,
+      },
+      doc_view = {
+        split = "split",      -- "split" or "vsplit"
+        split_size = 0.45,
+        short_border = "rounded",
+        short_max_width = 88,
+        short_max_height = 24,
+      },
+    })
+<
+
+==============================================================================
+4. COMMANDS                                                  *cygnus-commands*
+
+                                                                     *:Cygnus*
+:Cygnus [--c|--posix|--cpp] [query...]
+    Opens the floating fuzzy finder. Defaults to `[ALL]` sources unless a
+    source flag is provided. Optional trailing words prefill the query.
+
+                                                               *:CygnusLookup*
+:CygnusLookup [--c|--posix|--cpp] [--split|--vsplit] [--short] [symbol]
+    Looks up documentation for `symbol` (or the symbol under the cursor if
+    omitted, supporting C++ `std::...` tokens). Opens full documentation in a
+    split by default, or compact documentation in a floating window when
+    `--short` is passed.
+
+                                                                *:CygnusShort*
+:CygnusShort [--c|--posix|--cpp] [symbol]
+    Opens compact documentation for `symbol` (or the symbol under the cursor)
+    in a floating window.
+
+==============================================================================
+5. KEYMAPS                                                    *cygnus-keymaps*
+
+Inside the floating fuzzy finder:
+    `<C-j>` / `<C-n>` / `<Down>`    Next result
+    `<C-k>` / `<C-p>` / `<Up>`      Previous result
+    `<C-d>` / `<C-u>`               Scroll documentation preview down / up
+    `<Tab>`                         Cycle source filter (ALL -> C -> POSIX -> C++)
+    `<CR>`                          Open full documentation in a split
+    `<C-s>`                         Open compact documentation in a float
+    `<C-y>`                         Yank `#include <header>`
+    `<Esc>` / `<C-c>`               Close finder
+
+Inside the full documentation split:
+    `<CR>` / `K`                    Jump to symbol under cursor / SEE ALSO link
+    `<C-o>` / `<BS>`                Go back in documentation history
+    `y`                             Yank `#include <header>`
+    `q`                             Close split
+
+Inside the compact floating documentation window:
+    `<CR>`                          Expand to full documentation split
+    `y`                             Yank `#include <header>`
+    `q` / `<Esc>`                   Close float
+
+==============================================================================
+6. LUA API                                                        *cygnus-api*
+
+`require("cygnus").setup(opts)`                 Configure plugin options.
+`require("cygnus").open(opts)`                  Open floating fuzzy finder.
+`require("cygnus").search(opts)`                Alias for `open()`.
+`require("cygnus").lookup(symbol, opts)`        Look up symbol (`short=true` for float).
+`require("cygnus").lookup_short(symbol, opts)`  Look up compact doc in float.
+`require("cygnus").lookup_cword(opts)`          Look up symbol under cursor.
+`require("cygnus").close()`                     Close active floating windows.
+`require("cygnus").clear_cache()`               Clear in-memory session cache.
+
+==============================================================================
+7. HIGHLIGHT GROUPS                                        *cygnus-highlights*
+
+All highlight groups are defined with `default = true` so your colorscheme
+can override any of them:
+
+    `CygnusTitle`, `CygnusBorder`, `CygnusNormal`, `CygnusPromptPrefix`,
+    `CygnusPromptCounter`, `CygnusSelection`, `CygnusSelectionCaret`,
+    `CygnusSymbol`, `CygnusHeader`, `CygnusSummary`, `CygnusSection`,
+    `CygnusStandard`, `CygnusSynopsis`, `CygnusSeeAlso`, `CygnusHint`,
+    `CygnusError`, `CygnusSourceC`, `CygnusSourcePosix`, `CygnusSourceCpp`,
+    `CygnusSourceAll`.
+
+vim:tw=78:ts=8:ft=help:norl:
