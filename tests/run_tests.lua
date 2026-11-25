@@ -247,6 +247,37 @@ if vim.fn.executable("cygnus") == 1 then
     assert_eq(#vim.api.nvim_list_wins(), wins_before, "no leaked windows after finder close")
   end)
 
+  test("ui: finder resolves size_t (even in C mode), aliases (snprintf), and struct queries", function()
+    local function first_result_line(opts)
+      finder.open(opts)
+      local first_line = ""
+      wait_for(function()
+        for _, win in ipairs(vim.api.nvim_list_wins()) do
+          local b = vim.api.nvim_win_get_buf(win)
+          if vim.bo[b].filetype == "cygnus_results" then
+            local l = vim.api.nvim_buf_get_lines(b, 0, 1, false)[1] or ""
+            if l ~= "" and not l:find("loading") and not l:find("No matching") then
+              first_line = l
+              return true
+            end
+          end
+        end
+        return false
+      end, 2000)
+      finder.close()
+      return first_line
+    end
+
+    local size_t_line = first_result_line({ query = "size_t", source = "c" })
+    assert_truthy(size_t_line:find("size_t"), "size_t should appear even under C filter, got: " .. size_t_line)
+
+    local snprintf_line = first_result_line({ query = "snprintf" })
+    assert_truthy(snprintf_line:find("printf"), "snprintf alias should pin printf at #1, got: " .. snprintf_line)
+
+    local timespec_line = first_result_line({ query = "struct timespec" })
+    assert_truthy(timespec_line:find("timespec"), "struct timespec should pin timespec at #1, got: " .. timespec_line)
+  end)
+
   test("ui: short float and full split doc views", function()
     local wins_before = #vim.api.nvim_list_wins()
     doc_view.open_short("printf", { source = "c" })
