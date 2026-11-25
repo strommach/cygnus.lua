@@ -125,19 +125,6 @@ local function fetch_doc(symbol, source, cb)
   client.lookup(query, { source = source }, function(err, doc)
     if not err and doc then
       cache.set_doc(query, source, doc)
-      cb(nil, doc)
-      return
-    end
-    if source == "c" and err and err.kind == "not_found" then
-      client.lookup(query, { source = nil }, function(fb_err, fb_doc)
-        if not fb_err and fb_doc then
-          cache.set_doc(query, nil, fb_doc)
-          cb(nil, fb_doc)
-          return
-        end
-        cb(err, nil)
-      end)
-      return
     end
     cb(err, doc)
   end)

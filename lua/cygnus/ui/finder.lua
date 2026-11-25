@@ -295,21 +295,25 @@ local function extract_lookup_candidate(query)
 end
 
 ---@param doc table
+---@param source_filter string|nil
 ---@return table[]
-local function doc_to_entries(doc)
+local function doc_to_entries(doc, source_filter)
   local out = {}
-  table.insert(out, {
-    name = doc.name,
-    source = doc.source,
-    header = doc.header or "",
-    summary = doc.summary or "",
-  })
+  if not source_filter or doc.source == source_filter then
+    table.insert(out, {
+      name = doc.name,
+      source = doc.source,
+      header = doc.header or "",
+      summary = doc.summary or "",
+    })
+  end
   if type(doc.alternatives) == "table" then
     for _, alt in ipairs(doc.alternatives) do
-      if alt.name and alt.name ~= "" then
+      local alt_src = alt.source or doc.source
+      if alt.name and alt.name ~= "" and (not source_filter or alt_src == source_filter) then
         table.insert(out, {
           name = alt.name,
-          source = alt.source or doc.source,
+          source = alt_src,
           header = alt.header or "",
           summary = "",
         })
@@ -439,25 +443,8 @@ local function trigger_search(session, immediate)
         session.lookup_handle = nil
         if not err and doc then
           cache.set_doc(doc.name, doc.source, doc)
-          lookup_entries = doc_to_entries(doc)
+          lookup_entries = doc_to_entries(doc, source)
           apply_merged()
-          return
-        end
-
-        -- When filtering to C, C standard typedefs/structs (e.g. size_t, FILE, timespec)
-        -- may live under cppreference as std::<name>; fall back to unscoped lookup if exact.
-        if source == "c" and err and err.kind == "not_found" then
-          session.lookup_handle = client.lookup(candidate, { source = nil }, function(fb_err, fb_doc)
-            if session.closed or seq ~= session.search_seq then
-              return
-            end
-            session.lookup_handle = nil
-            if not fb_err and fb_doc then
-              cache.set_doc(fb_doc.name, fb_doc.source, fb_doc)
-              lookup_entries = doc_to_entries(fb_doc)
-              apply_merged()
-            end
-          end)
         end
       end)
     end
