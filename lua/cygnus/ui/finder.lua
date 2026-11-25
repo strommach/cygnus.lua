@@ -178,9 +178,7 @@ local function update_preview(session)
   session.preview_seq = session.preview_seq + 1
   local seq = session.preview_seq
 
-  if session.preview_timer and not session.preview_timer:is_closing() then
-    session.preview_timer:stop()
-  end
+  stop_timer(session.preview_timer)
   session.preview_timer = vim.uv.new_timer()
 
   local delay = config.get().finder.preview_debounce_ms or 20
@@ -281,6 +279,74 @@ local function render_results(session)
   update_preview(session)
 end
 
+---@param query string
+---@return string|nil
+local function extract_lookup_candidate(query)
+  local stripped = query:gsub("^%s*struct%s+", "")
+    :gsub("^%s*enum%s+", "")
+    :gsub("^%s*union%s+", "")
+    :gsub("^%s*class%s+", "")
+    :gsub("^%s+", "")
+    :gsub("%s+$", "")
+  if stripped == "" or stripped:find("%s") then
+    return nil
+  end
+  return stripped
+end
+
+---@param doc table
+---@return table[]
+local function doc_to_entries(doc)
+  local out = {}
+  table.insert(out, {
+    name = doc.name,
+    source = doc.source,
+    header = doc.header or "",
+    summary = doc.summary or "",
+  })
+  if type(doc.alternatives) == "table" then
+    for _, alt in ipairs(doc.alternatives) do
+      if alt.name and alt.name ~= "" then
+        table.insert(out, {
+          name = alt.name,
+          source = alt.source or doc.source,
+          header = alt.header or "",
+          summary = "",
+        })
+      end
+    end
+  end
+  return out
+end
+
+---@param primary table[]
+---@param secondary table[]
+---@param limit number
+---@return table[]
+local function merge_entries(primary, secondary, limit)
+  local merged = {}
+  local seen = {}
+
+  local function add(item)
+    if #merged >= limit then
+      return
+    end
+    local key = (item.source or "") .. ":" .. (item.name or "")
+    if not seen[key] and item.name and item.name ~= "" then
+      seen[key] = true
+      table.insert(merged, item)
+    end
+  end
+
+  for _, item in ipairs(primary) do
+    add(item)
+  end
+  for _, item in ipairs(secondary) do
+    add(item)
+  end
+  return merged
+end
+
 ---@param session table
 ---@param immediate? boolean
 local function trigger_search(session, immediate)
@@ -292,9 +358,12 @@ local function trigger_search(session, immediate)
     session.search_handle.cancel()
     session.search_handle = nil
   end
-  if session.search_timer and not session.search_timer:is_closing() then
-    session.search_timer:stop()
+  if session.lookup_handle then
+    session.lookup_handle.cancel()
+    session.lookup_handle = nil
   end
+  stop_timer(session.search_timer)
+  session.search_timer = nil
 
   session.search_seq = session.search_seq + 1
   local seq = session.search_seq
@@ -337,25 +406,81 @@ local function trigger_search(session, immediate)
       return
     end
     update_prompt_chrome(session, " searching... ")
+
+    local candidate = extract_lookup_candidate(query)
+    local lookup_entries = {}
+    local search_entries = {}
+    local search_err = nil
+    local search_done = false
+
+    local function apply_merged()
+      if session.closed or seq ~= session.search_seq then
+        return
+      end
+      local combined = merge_entries(lookup_entries, search_entries, limit)
+      if #combined > 0 then
+        session.error_msg = nil
+        session.entries = combined
+      elseif search_done then
+        session.error_msg = search_err
+        session.entries = {}
+      else
+        return
+      end
+      session.selected = 1
+      render_results(session)
+    end
+
+    if candidate then
+      session.lookup_handle = client.lookup(candidate, { source = source }, function(err, doc)
+        if session.closed or seq ~= session.search_seq then
+          return
+        end
+        session.lookup_handle = nil
+        if not err and doc then
+          cache.set_doc(doc.name, doc.source, doc)
+          lookup_entries = doc_to_entries(doc)
+          apply_merged()
+          return
+        end
+
+        -- When filtering to C, C standard typedefs/structs (e.g. size_t, FILE, timespec)
+        -- may live under cppreference as std::<name>; fall back to unscoped lookup if exact.
+        if source == "c" and err and err.kind == "not_found" then
+          session.lookup_handle = client.lookup(candidate, { source = nil }, function(fb_err, fb_doc)
+            if session.closed or seq ~= session.search_seq then
+              return
+            end
+            session.lookup_handle = nil
+            if not fb_err and fb_doc then
+              cache.set_doc(fb_doc.name, fb_doc.source, fb_doc)
+              lookup_entries = doc_to_entries(fb_doc)
+              apply_merged()
+            end
+          end)
+        end
+      end)
+    end
+
     session.search_handle = client.search(query, { source = source, limit = limit }, function(err, hits)
       if session.closed or seq ~= session.search_seq then
         return
       end
       session.search_handle = nil
+      search_done = true
       if err then
         if err.kind == "not_found" then
-          session.error_msg = nil
-          session.entries = err.suggestions or {}
+          search_err = nil
+          search_entries = err.suggestions or {}
         else
-          session.error_msg = err.message
-          session.entries = {}
+          search_err = err.message
+          search_entries = {}
         end
       else
-        session.error_msg = nil
-        session.entries = hits or {}
+        search_err = nil
+        search_entries = hits or {}
       end
-      session.selected = 1
-      render_results(session)
+      apply_merged()
     end)
   end
 
@@ -413,6 +538,10 @@ local function close_session(session)
   if session.search_handle then
     session.search_handle.cancel()
     session.search_handle = nil
+  end
+  if session.lookup_handle then
+    session.lookup_handle.cancel()
+    session.lookup_handle = nil
   end
   if session.preview_handle then
     session.preview_handle.cancel()
@@ -574,6 +703,7 @@ function M.open(opts)
     search_seq = 0,
     preview_seq = 0,
     search_handle = nil,
+    lookup_handle = nil,
     preview_handle = nil,
     search_timer = nil,
     preview_timer = nil,
@@ -643,27 +773,31 @@ function M.open(opts)
     close_session(session)
   end, { buffer = prompt_buf, nowait = true, silent = true })
 
-  -- Watch prompt text changes
-  vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
-    group = session.augroup,
-    buffer = prompt_buf,
-    callback = function()
+  -- Watch prompt edits via nvim_buf_attach so insert mode, paste, and feedkeys always trigger search
+  local function on_prompt_change()
+    if session.closed or not valid_buf(prompt_buf) then
+      return
+    end
+    local lines = vim.api.nvim_buf_get_lines(prompt_buf, 0, -1, false)
+    if #lines > 1 then
+      local joined = table.concat(lines, " ")
+      vim.api.nvim_buf_set_lines(prompt_buf, 0, -1, false, { joined })
+      lines = { joined }
+    end
+    apply_prompt_prefix(session)
+    local new_query = lines[1] or ""
+    if new_query ~= session.query then
+      session.query = new_query
+      trigger_search(session, false)
+    end
+  end
+
+  vim.api.nvim_buf_attach(prompt_buf, false, {
+    on_lines = function()
       if session.closed then
-        return
+        return true
       end
-      local lines = vim.api.nvim_buf_get_lines(prompt_buf, 0, -1, false)
-      -- Keep prompt strictly single-line
-      if #lines > 1 then
-        local joined = table.concat(lines, " ")
-        vim.api.nvim_buf_set_lines(prompt_buf, 0, -1, false, { joined })
-        lines = { joined }
-      end
-      apply_prompt_prefix(session)
-      local new_query = lines[1] or ""
-      if new_query ~= session.query then
-        session.query = new_query
-        trigger_search(session, false)
-      end
+      vim.schedule(on_prompt_change)
     end,
   })
 
