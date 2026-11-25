@@ -100,17 +100,44 @@ local function render_error_doc(err)
 end
 
 ---@param symbol string
+---@return string
+local function normalize_symbol(symbol)
+  return (symbol:gsub("^%s*struct%s+", "")
+    :gsub("^%s*enum%s+", "")
+    :gsub("^%s*union%s+", "")
+    :gsub("^%s*class%s+", "")
+    :gsub("^%s+", "")
+    :gsub("%s+$", ""))
+end
+
+---@param symbol string
 ---@param source string|nil
 ---@param cb fun(err: CygnusClientError|nil, doc: table|nil)
 local function fetch_doc(symbol, source, cb)
-  local cached = cache.get_doc(symbol, source)
+  local normalized = normalize_symbol(symbol)
+  local query = normalized ~= "" and normalized or symbol
+
+  local cached = cache.get_doc(query, source)
   if cached then
     cb(nil, cached)
     return
   end
-  client.lookup(symbol, { source = source }, function(err, doc)
+  client.lookup(query, { source = source }, function(err, doc)
     if not err and doc then
-      cache.set_doc(symbol, source, doc)
+      cache.set_doc(query, source, doc)
+      cb(nil, doc)
+      return
+    end
+    if source == "c" and err and err.kind == "not_found" then
+      client.lookup(query, { source = nil }, function(fb_err, fb_doc)
+        if not fb_err and fb_doc then
+          cache.set_doc(query, nil, fb_doc)
+          cb(nil, fb_doc)
+          return
+        end
+        cb(err, nil)
+      end)
+      return
     end
     cb(err, doc)
   end)
